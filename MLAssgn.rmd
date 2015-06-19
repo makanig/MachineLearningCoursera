@@ -1,0 +1,420 @@
+---
+title: "Practical Machine Learning Course Project"
+author: "Gautam Makani"
+date: "Sunday, June 21, 2015"
+output: html_document
+---
+
+#Machine Learning for Qualitative Activity Recognition
+
+The quality of executing an activity, the "how (well)",provides valuable information for a large variety of Internet Of Things(IoT) applications. 
+
+- Cheap, interconnected data gathering sensors can be added to any physical object including wearables, thermostats, medical devices, household appliances, home automation and industrial controls. 
+- Big Data coupled with advanced, machine learning based analytics can provide insight into every kind of activity, helping deliver efficiencies and innovation to the marketplace.
+
+In this project I develop a machine learning model for activity recognition from sensor data gathered during weight lifting exercises.
+
+###Credits and Data Source
+ 
+Velloso, E.; Bulling, A.; Gellersen, H.; Ugulino, W.; Fuks, H. Qualitative Activity Recognition of Weight Lifting Exercises. Proceedings of 4th International Conference in Cooperation with SIGCHI (Augmented Human '13) . Stuttgart, Germany: ACM SIGCHI, 2013.
+
+http://groupware.les.inf.puc-rio.br/har 
+
+
+###Sensor data and derived statistical features
+
+Users were recorded performing the same activity correctly and with a set of common mistakes
+with wearable sensors. Data was recorded with four 9 degrees of freedom Razor
+inertial measurement units (IMU), which provide three-axes acceleration, gyroscope 
+and magnetometer data at a joint sampling rate of 45 Hz. 
+
+Feature extraction used a sliding window approach
+with different lengths from 0.5 second to 2.5 seconds, with
+0.5 second overlap. In each step of the sliding window approach
+features on the Euler angles (roll, pitch and yaw), as well as the raw accelerometer, 
+gyroscope and magnetometer readings were calculated. For the Euler angles of each of the
+four sensors these eight features were calculated: mean, variance,
+standard deviation, max, min, amplitude, kurtosis and skewness,
+generating in total 96 derived feature sets.
+
+###Approach
+
+The project methodology consisted of:
+
+  - Exploratory Data Analysis
+  - Data Cleansing
+  - Prediction Design
+  - Model candidate selection
+  - Model execution and validation
+
+The pml-training data was used to train, cross-validate & and select the best model based on the estimated out of sample error. 
+The OOS error was estimated with cross validation (Accuracy & kappa).
+
+The project submission (validation phase) and performed on the pml-test data.
+
+####Exploratory Data Analysis
+
+Initial exploratory data analysis was done on the training data to understand the significance of the variables.
+
+####Data cleansing
+The dataset was culled from 160 potential predictors to 52 removing the following:
+
+  - variables with more than 25% missing or N/A values
+  - window, time, user, index variables that do not predict output behaviour
+  - variables that have a high correlation with the sequence (X) index variable
+  - near zero variance (NZV) variables
+
+####Prediction Design
+
+The cleansed data was split into a 1%-99% training/testing set to evaluate the various machine learning models for the best candidate.
+
+The caret package was used extensively in the project.
+
+####Model Candidate Selection
+
+The following machine learning models were run on a 1% sample of the training set to identify the best candidate:
+  - Linear Discriminant Analysis
+  - k Nearest neighbors
+  - Random forest with centering/scaling
+  - Random forest without centering/scaling
+  
+The model created using the 1% training set was run on the 99% testing set for cross validation, and the OOS error estimate was used to select the best candidate.
+
+####Model execution and validation
+
+The Random forest without centering/scaling was chosen as the best model amongst the candidate model list. 
+The training set It was then changed to run on 10% of the training set and cross validated with the remaining 90%.
+
+(Refer to the appendix for the output)
+
+###Results
+
+The final model gave a 98%+ accuracy and kappa. 
+It correctly predicted all of the submission data values.
+
+### Ancillary activities/trials
+
+PCA (Principal Component Analysis) was investigated if it could yield a better Random Forest model.
+It resulted in 17 variables explaining 90% of the variance, but ultimately did not prove better than the final model.
+
+
+###Further refinements and enhancements
+
+The final model was extremely accurate, but if it was < 95%, and given more time here are alternatives I would try:
+
+- boosting 
+- Naive Bayes
+
+###Appendix
+
+
+```{r}
+
+##install.packages(c("AppliedPredictiveModeling", "caret", "e1071"), repos = "http://cran.us.r-project.org")
+##install.packages(c("ElemStatLearn","pgmm","rpart", "rattle", "randomForest"), repos = "http://cran.us.r-project.org")
+
+load <- function(pkg){
+  new.pkg <- pkg[!(pkg %in% installed.packages()[, "Package"])]
+  if (length(new.pkg))
+    install.packages(new.pkg, dependencies = TRUE)
+  sapply(pkg, require, character.only = TRUE)
+} 
+
+findBestAlgo <- function() {
+  
+  yRf <- doRf()
+  yRf2 <- doRf2()
+  yKnn <- doKnn()
+  yLda <- doLda()
+  
+  y1 <- c(yRf[3], yRf2[3], yKnn[3], yLda[3])
+  yp <- c(yRf[2], yRf2[2], yKnn[2], yLda[2])
+  
+  algoDf <- data.frame(x = c("rf", "rf2", "knn", "lda"),y = y1 )
+  algoDf
+  
+}
+
+MLAssgn <- function () {
+  
+  if(exists("cachedVal") && !is.null(cachedVal)) {
+    message("getting cached data")
+    return(cachedVal)
+  }
+  cachedVal <<- LoadMLAssgn()
+  cachedVal
+}
+
+LoadMLAssgn <- function () {
+
+  cachedVal <<- NULL
+  
+  packages <- c("data.table", "caret", "randomForest", "foreach", 
+                "e1071", "rpart", "doParallel", "pgmm","rattle")
+  load(packages)
+
+  library(AppliedPredictiveModeling)
+  library(caret)
+  library(e1071)
+  
+  library(ElemStatLearn)
+  library(pgmm)
+  
+  library(rpart)
+ 
+  library(rattle)
+
+  setwd("C:/Users/gautam.Mom81/Documents/courseraDataScienceSpecialization/PracticalMachineLearning")
+  
+  rowsToRead <- -1
+  
+  fileData <- read.csv("pml-training.csv", nrows = rowsToRead)
+  
+  n <- nrow(fileData)
+  print(paste("nrows:",n, "ncols:", ncol(fileData)))
+  
+  attrToKeep <- c()
+  for (f in colnames(fileData)) {
+    i <- is.na(fileData[f])
+  
+    # keep columns that are 75% non-null 
+    if (sum(i) < 0.75*n) {attrToKeep <- c(attrToKeep,f)}
+  }
+  
+  ##print (paste("attrFilter:", attrToKeep))
+  fileData <- subset(fileData, select = attrToKeep)
+  
+  # Remove attributes which have a high positive or negative correlation with X
+  attrToKeep <- c()
+  for (d in colnames(fileData)) {
+    
+    # remove X and user_name
+    v <- fileData[1,d]
+    ##print(paste("Testing attr:", d, "v:", v))
+    if (!is.na(v) && is.numeric(v)) {
+      myCor <- cor(fileData[d], fileData$X)
+      
+      ## keep only those which have cor < 0.9 with the index
+      if (abs(myCor) < 0.9) {attrToKeep <- c(attrToKeep, d)}
+      
+    } else {
+      attrToKeep <- c(attrToKeep, d)
+    } 
+  }
+  fileData <- subset(fileData, select = attrToKeep)
+  
+  ## remove username, anything timestamp related, and new_window, kurtosis and skewnewss
+  attrToKeep <- c()
+  for (d in colnames(fileData)) {
+    if ((d == "user_name") || grepl("?time", d) || grepl("?kurtosis",d) ||
+          grepl("?skewness", d) || (d == "new_window") || (d == "num_window")) {
+      ##print(paste("removing:", d))
+    } else {
+      attrToKeep <- c(attrToKeep, d)
+    }
+  }
+
+  fileData <- subset(fileData, select = attrToKeep)
+  
+  ## eliminate near Zero Var 
+  t <- nearZeroVar(fileData,saveMetrics=FALSE)
+  fileData <- fileData[-t]
+}
+
+## Random forest with center/scale
+##
+doRf2 <- function () {
+  
+  
+  print (" ====Random forest 2 with center/scale=========")
+  myData <- MLAssgn()
+  
+  trainIndex = createDataPartition(myData$classe, p = 0.01,list=FALSE)
+  training = myData[trainIndex,]
+  testing = myData[-trainIndex,]
+ 
+  set.seed(33833)
+  
+  tc <- trainControl("repeatedcv", number=10, repeats=10, 
+                    classProbs=TRUE, savePred=T)
+  
+   
+  modFit <- train(training$classe ~ .,data=training, method="rf", trControl=tc, preProc=c("center", "scale"),
+                  prox=TRUE)
+  v <- varImp(modFit)
+  print(v)
+    
+  t <- predict(modFit,newdata=testing)
+  print(summary(t))
+  
+  ##summary(testing$classe)
+  
+  mPC <- confusionMatrix(testing$classe,t)
+  
+  print("===Confusion matrix fit for testing data")
+  print (mPC)
+  mPC
+}
+
+## Random forest without center/scale
+doRf <- function () {
+  myData <- MLAssgn()
+  
+  trainIndex = createDataPartition(myData$classe, p = 0.1,list=FALSE)
+  training = myData[trainIndex,]
+  testing = myData[-trainIndex,]
+  
+  library(ElemStatLearn)
+  library(randomForest)
+  
+  set.seed(33833)
+  
+  tc <- trainControl("repeatedcv", number=10, repeats=10, 
+                     classProbs=TRUE, savePred=T)
+  
+  modFit <- train(training$classe ~ .,data=training, trControl=tc, method="rf",prox=TRUE)
+  print(modFit)
+  v <- varImp(modFit)
+  print(v)
+  
+  t <- predict(modFit,newdata=testing)
+  print(summary(t))
+  
+  ##summary(testing$classe)
+  
+  mPC <- confusionMatrix(testing$classe,t)
+  
+  print("===Confusion matrix fit for testing data")
+  print (mPC)
+  
+  
+  # Do the prediction on the validation set
+  vData <- read.csv("pml-testing.csv", nrows = -1)
+  
+  print ("===========Operating on test data=======")
+  
+  # get all the IL predictors
+  mypredi <- which(colnames(training)!="classe")
+  trainingi <- training[,mypredi]
+  vData <- subset(vData, select = colnames(trainingi))
+  t <- predict(modFit,newdata=vData)
+  print(t)
+  mPC
+}
+  
+doLda <- function () {
+  myData <- MLAssgn()
+  
+  trainIndex = createDataPartition(myData$classe, p = 0.01,list=FALSE)
+  training = myData[trainIndex,]
+  testing = myData[-trainIndex,]
+  
+  
+  library(ElemStatLearn)
+  library(randomForest)
+  
+  set.seed(33833)
+  
+  tc <- trainControl("repeatedcv", number=10, repeats=10, 
+                     classProbs=TRUE, savePred=T)
+  
+  modFit <- train(training$classe ~ .,data=training, trControl=tc, method="lda",prox=TRUE)
+  print(modFit)
+#   v <- varImp(modFit)
+#   print(v)
+  
+  t <- predict(modFit,newdata=testing)
+  print(summary(t))
+  
+  ##summary(testing$classe)
+  
+  mPC <- confusionMatrix(testing$classe,t)
+  
+  print("===Confusion matrix fit for testing data")
+  print (mPC)
+  mPC
+}
+
+doKnn <- function() {
+  
+  myData <- MLAssgn()
+  
+  trainIndex = createDataPartition(myData$classe, p = 0.01,list=FALSE)
+  training = myData[trainIndex,]
+  testing = myData[-trainIndex,]
+  
+  
+  library(ElemStatLearn)
+  library(randomForest)
+  
+  set.seed(33833)
+  
+  tc <- trainControl("repeatedcv", number=10, repeats=10, 
+                     classProbs=TRUE, savePred=T)
+  
+  modFit <- train(training$classe ~ .,data=training, trControl=tc, method="knn",
+                  preProcess = c("center","scale"), tuneLength = 20)
+  print(modFit)
+  #   v <- varImp(modFit)
+  #   print(v)
+  
+  t <- predict(modFit,newdata=testing)
+  print(summary(t))
+  
+  ##summary(testing$classe)
+  
+  mPC <- confusionMatrix(testing$classe,t)
+  
+  print("===Confusion matrix fit for testing data")
+  print (mPC)
+  mPC
+}
+
+doPca <- function () {
+  myData <- MLAssgn()
+  
+  trainIndex = createDataPartition(myData$classe, p = 0.01,list=FALSE)
+  training = myData[trainIndex,]
+  testing = myData[-trainIndex,]
+
+  
+  ## get all the IL predictors
+  mypredi <- which(colnames(training)!="classe")
+  preProc <- preProcess(training[,mypredi],method="pca", thresh=0.8)
+  
+  print(preProc)
+  
+  newTrainPC <- predict(preProc,training[,mypredi])
+  
+  modelFitPC <- train(training$classe ~ .,method="glm",data=newTrainPC)
+  
+  print("===PCA Model Fit===")
+  print(modelFitPC)
+  
+  testPC <- predict(preProc,testing[,mypredi])
+  mPC <- confusionMatrix(testing$classe,predict(modelFitPC,testPC))
+  
+  print("===Confusion matrix fit for testing data")
+  print (mPC)
+  
+  mPC
+  
+}
+
+doPlots <- function() {
+  
+  myData <- MLAssgn()
+  
+  testIndex = createDataPartition(myData$classe, p = 0.70,list=FALSE)
+  training = myData[-testIndex,]
+  testing = myData[testIndex,]
+  
+  mypredi <- which(colnames(training)!="classe")
+ 
+  featurePlot(x=training[,mypredi],
+              y = training$classe,
+              plot="pairs")
+  
+}
+doRf()
+```
